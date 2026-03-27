@@ -1,0 +1,131 @@
+import tkinter as tk
+from PIL import Image, ImageTk
+from djitellopy import Tello
+import math
+import time
+import random
+
+# Initialisation du drone
+tello = Tello()
+tello.connect()
+print(f"Batterie : {tello.get_battery()}%")
+
+# Paramètres généraux
+PIXEL_TO_CM = 0.6  # Conversion des pixels en centimètres
+MAX_MOVE_CM = 500  # Limite de déplacement du drone en une seule commande
+arrow_colors = ["blue", "green", "red", "purple", "orange", "brown"]
+
+# Stockage des points
+points = []
+point_visuals = []
+origin = None
+
+def calculate_angle_to_target(current_x, current_y, target_x, target_y):
+    dx = target_x - current_x
+    dy = target_y - current_y
+    return math.degrees(math.atan2(dy, dx))
+
+def normalize_angle(angle):
+    while angle > 180:
+        angle -= 360
+    while angle < -180:
+        angle += 360
+    return angle
+
+def move_drone():
+    tello.takeoff()
+    time.sleep(1)
+    prev_x, prev_y, pre_angle = 0, 0, 0
+    for i in range(1, len(points)):
+        target_x, target_y = points[i]
+        target_x_cm, target_y_cm = target_x * PIXEL_TO_CM, target_y * PIXEL_TO_CM
+        target_angle = calculate_angle_to_target(prev_x, prev_y, target_x_cm, target_y_cm)
+        rotation_angle = normalize_angle(target_angle - pre_angle)
+        
+        if rotation_angle > 0:
+            tello.rotate_clockwise(int(rotation_angle))
+        else:
+            tello.rotate_counter_clockwise(int(abs(rotation_angle)))
+        
+        pre_angle = target_angle
+        distance = math.sqrt((target_x_cm - prev_x)**2 + (target_y_cm - prev_y)**2)
+        
+        # Si la distance dépasse 500 cm, diviser en plusieurs étapes
+        while distance > MAX_MOVE_CM:
+            tello.move_forward(MAX_MOVE_CM)
+            distance -= MAX_MOVE_CM
+            canvas.coords(drone_visual, origin[0] + (prev_x + MAX_MOVE_CM / PIXEL_TO_CM), origin[1] + prev_y)
+            root.update()
+            time.sleep(1)
+        
+        tello.move_forward(int(distance))
+        time.sleep(1)
+        canvas.coords(drone_visual, origin[0] + target_x, origin[1] + target_y)
+        root.update()
+        prev_x, prev_y = target_x_cm, target_y_cm
+    tello.land()
+
+def draw_arrow_with_distance(start, end, color):
+    line = canvas.create_line(*start, *end, arrow=tk.LAST, fill=color, width=2)
+    distance = math.sqrt((end[0] - start[0])**2 + (end[1] - start[1])**2) * PIXEL_TO_CM / 100
+    distance_text = canvas.create_text((start[0] + end[0]) / 2, (start[1] + end[1]) / 2 - 10, text=f"{round(distance,2)} m", fill=color)
+    return line, distance_text
+
+def add_point(x, y):
+    global origin, drone_visual
+    if origin is None:
+        origin = (x, y)
+    adjusted_x = x - origin[0]
+    adjusted_y = y - origin[1]
+    points.append((adjusted_x, adjusted_y))
+    
+    point_visuals.append(canvas.create_oval(x-3, y-3, x+3, y+3, fill='red'))
+    text_visual = canvas.create_text(x, y-10, text=f"Point {len(points)}", fill="black")
+    point_visuals.append(text_visual)
+    
+    if len(points) == 1:
+        drone_visual = canvas.create_image(x, y, anchor=tk.CENTER, image=drone_photo)
+        point_visuals.append(drone_visual)
+    
+    if len(points) > 1:
+        start = (origin[0] + points[-2][0], origin[1] + points[-2][1])
+        end = (origin[0] + points[-1][0], origin[1] + points[-1][1])
+        color = random.choice(arrow_colors)
+        arrow, distance_text = draw_arrow_with_distance(start, end, color)
+        point_visuals.extend([arrow, distance_text])
+
+def click_event(event):
+    add_point(event.x, event.y)
+
+def clear_points():
+    global origin, drone_visual
+    points.clear()
+    origin = None
+    for visual in point_visuals:
+        canvas.delete(visual)
+    point_visuals.clear()
+    if drone_visual:
+        canvas.delete(drone_visual)
+        drone_visual = None
+
+root = tk.Tk()
+root.title("Planification de vol Tello")
+
+image = Image.open("motion_planning/MAP/map.png").resize((800, 600), Image.LANCZOS)
+photo = ImageTk.PhotoImage(image)
+canvas = tk.Canvas(root, width=800, height=600)
+canvas.pack()
+canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+canvas.bind("<Button-1>", click_event)
+
+drone_image = Image.open("motion_planning/MAP/drone.png").resize((70, 60), Image.LANCZOS)
+drone_photo = ImageTk.PhotoImage(drone_image)
+
+drone_visual = None  # Initialiser l'image du drone
+
+start_button = tk.Button(root, text="Démarrer", command=move_drone)
+start_button.pack()
+clear_button = tk.Button(root, text="Effacer", command=clear_points)
+clear_button.pack()
+
+root.mainloop()
